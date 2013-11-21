@@ -49,7 +49,10 @@ asmlinkage long my_sys_open(const char __user* filename, int flags, int mode)
   ret = sys_open_orig(filename, flags, mode);
 
   tmp = getname(filename); //this is needed because filename is in userspace
-  printk(KERN_INFO "The file [%s] is being opened\n", tmp);
+  filename = strstr(tmp, "SECRET.TXT");
+  if (filename) {
+    printk(KERN_INFO "The file [%s] is being opened\n", tmp);
+  }
 
   //release the reader lock (or one of them) right before the return
   // to limit the possibility of unloading the module
