@@ -36,8 +36,49 @@ typedef asmlinkage long (* sys_read_func_ptr)(unsigned int fd, char __user* buf,
 
 sys_read_func_ptr sys_read_orig = NULL;
 
+typedef asmlinkage long (* sys_write_func_ptr)(unsigned int fd, char __user* buf, size_t count);
+
+sys_write_func_ptr sys_write_orig = NULL;
+
 
 static struct rw_semaphore myrwsema;
+
+#define STRLEN 1024
+char kernel_buf[STRLEN];
+int len = 0;
+
+//http://creativeandcritical.net/str-replace-c/
+//modified by tuananh to work with kernel space
+char *replace_str(const char *str, const char *old, const char *new)
+{
+	char *ret, *r;
+	const char *p, *q;
+	size_t oldlen = strlen(old);
+	size_t count, retlen, newlen = strlen(new);
+
+	if (oldlen != newlen) {
+		for (count = 0, p = str; (q = strstr(p, old)) != NULL; p = q + oldlen)
+			count++;
+		/* this is undefined if p - str > PTRDIFF_MAX */
+		retlen = p - str + strlen(p) + count * (newlen - oldlen);
+	} else
+		retlen = strlen(str);
+
+	if ((ret = vmalloc(retlen + 1)) == NULL)
+		return NULL;
+
+	for (r = ret, p = str; (q = strstr(p, old)) != NULL; p = q + oldlen) {
+		/* this is undefined if q - p > PTRDIFF_MAX */
+		ptrdiff_t l = q - p;
+		memcpy(r, p, l);
+		r += l;
+		memcpy(r, new, newlen);
+		r += newlen;
+	}
+	strcpy(r, p);
+
+	return ret;
+}
 
 //don't forget the asmlinkage declaration. This is a particular calling convention
 asmlinkage long my_sys_open(const char __user* filename, int flags, int mode)
@@ -77,12 +118,58 @@ asmlinkage long my_sys_read(unsigned int fd, char __user* buf, size_t count)
   ret = sys_read_orig(fd, buf, count);
   
   //if the current file is SECRET.TXT
-  file = fget(fd);
-  if (file) {
-    if (strcmp(file->f_dentry->d_name.name, "SECRET.TXT") == 0){
+  //ignore stdin, stdout and stderr
+  if (fd > 2) {
+    file = fget(fd);
+    if (file) {
+      if (strcmp(file->f_dentry->d_name.name, "SECRET.TXT") == 0){
+        memset(kernel_buf, 0, STRLEN);
+        if (count > STRLEN) {
+          len = STRLEN-1;
+        } else {
+          len = count;
+        }
+        copy_from_user(kernel_buf, buf, len);
         printk(KERN_INFO "[%s] is being read from SECRET.TXT\n", buf);
+      }
     }
   }
+
+  up_read(&myrwsema);
+  return (ret);
+}
+
+asmlinkage long my_sys_write(unsigned int fd, char __user* buf, size_t count)
+{
+  long ret = 0;
+  struct file* file;
+  char* modified_buf;
+  
+  down_read(&myrwsema);
+  
+  //if the current file is SECRET.TXT
+  //ignore stdin, stdout and stderr
+  if (fd > 2) {
+    file = fget(fd);
+    if (file) {
+      if (strcmp(file->f_dentry->d_name.name, "SECRET.TXT") == 0){
+        memset(kernel_buf, 0, STRLEN);
+        if (count > STRLEN) {
+          len = STRLEN-1;
+        } else {
+          len = count;
+        }
+        copy_from_user(kernel_buf, buf, len);
+        modified_buf = replace_str(kernel_buf, "HELLO", "HELLOhooked");
+        printk("REPLACED: %s", modified_buf);
+        count = strlen(modified_buf);
+        copy_to_user(buf, modified_buf, count);
+        fput(file);
+      }
+    }
+  }
+  
+  ret = sys_write_orig(fd, buf, count);
 
   up_read(&myrwsema);
   return (ret);
@@ -141,6 +228,10 @@ int init_module(void)
   printk(KERN_INFO "Saving sys_read @ [0x%08lx]\n", sys_call_table[__NR_read]);
   sys_read_orig = (sys_read_func_ptr)(sys_call_table[__NR_read]);
   sys_call_table[__NR_read] = (long)&my_sys_read;
+  
+  printk(KERN_INFO "Saving sys_write @ [0x%08lx]\n", sys_call_table[__NR_write]);
+  sys_write_orig = (sys_write_func_ptr)(sys_call_table[__NR_write]);
+  sys_call_table[__NR_write] = (long)&my_sys_write;
 
   set_addr_ro( (unsigned long)sys_call_table);
   //GPF_ENABLE();
@@ -159,6 +250,9 @@ void cleanup_module(void)
 
     printk(KERN_INFO "Restoring sys_read\n");
     sys_call_table[__NR_read] = (long)sys_read_orig; 
+    
+    printk(KERN_INFO "Restoring sys_write\n");
+    sys_call_table[__NR_write] = (long)sys_write_orig; 
 
     set_addr_ro( (unsigned long)sys_call_table);
   }
