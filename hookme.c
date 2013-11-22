@@ -8,6 +8,8 @@
 #include <linux/fs.h>
 #include <linux/dcache.h>
 
+#include <linux/file.h>
+
 //include for the read/write semaphore
 #include <linux/rwsem.h>
 
@@ -35,7 +37,7 @@ typedef asmlinkage long (* sys_read_func_ptr)(unsigned int fd, char __user* buf,
 sys_read_func_ptr sys_read_orig = NULL;
 
 
-static struct rw_semaphore myrwsema; 
+static struct rw_semaphore myrwsema;
 
 //don't forget the asmlinkage declaration. This is a particular calling convention
 asmlinkage long my_sys_open(const char __user* filename, int flags, int mode)
@@ -45,6 +47,9 @@ asmlinkage long my_sys_open(const char __user* filename, int flags, int mode)
 
   //add in another reader to the semaphore
   down_read(&myrwsema);
+  
+  //reset current_secret variable
+  current_secret = 0;
 
   ret = sys_open_orig(filename, flags, mode);
 
@@ -68,9 +73,19 @@ asmlinkage long my_sys_open(const char __user* filename, int flags, int mode)
 asmlinkage long my_sys_read(unsigned int fd, char __user* buf, size_t count)
 {
   long ret = 0;
+  struct file* file;
+  
   down_read(&myrwsema);
 
   ret = sys_read_orig(fd, buf, count);
+  
+  //if the current file is SECRET.TXT
+  file = fget(fd);
+  if (file) {
+    if (strcmp(file->f_dentry->d_name.name, "SECRET.TXT") == 0){
+        printk(KERN_INFO "[%s] is being read from SECRET.TXT\n", buf);
+    }
+  }
 
   up_read(&myrwsema);
   return (ret);
