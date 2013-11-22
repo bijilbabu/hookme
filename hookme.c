@@ -47,9 +47,6 @@ asmlinkage long my_sys_open(const char __user* filename, int flags, int mode)
 
   //add in another reader to the semaphore
   down_read(&myrwsema);
-  
-  //reset current_secret variable
-  current_secret = 0;
 
   ret = sys_open_orig(filename, flags, mode);
 
